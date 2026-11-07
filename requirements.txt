@@ -1,0 +1,31 @@
+# Dependencias principales para la API REST de Flask y PostgreSQL
+
+# Framework web Flask
+Flask>=3.0.2
+
+# ORM para el manejo de base de datos SQL en Flask
+Flask-SQLAlchemy>=3.1.1
+
+# Adaptador de PostgreSQL (psycopg3)
+psycopg[binary]
+
+# Extensión para mapeo y utilidades de SQLAlchemy (requiere >=2.0.31 para Python 3.13 / 3.14)
+SQLAlchemy>=2.0.36
+
+# Documentación interactiva Swagger / OpenAPI
+flasgger>=0.9.7.1
+
+# Soporte de CORS para clientes externos (Android, navegadores)
+flask-cors>=4.0.0
+
+# Gestión de variables de entorno y secretos (.env)
+python-dotenv>=1.0.1
+
+# Autenticación y generación de tokens JWT
+PyJWT>=2.8.0
+
+# Protección contra ataques de fuerza bruta y rate-limiting
+Flask-Limiter>=3.5.0
+
+# Servidor WSGI recomendado para producción
+gunicorn>=21.2.0

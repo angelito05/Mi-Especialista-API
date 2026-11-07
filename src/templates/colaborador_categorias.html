@@ -1,0 +1,32 @@
+{% extends 'base.html' %}
+{% block content %}
+<h2>Colaborador - Categoría</h2>
+<div class="row mt-4">
+    <div class="col-md-4">
+        <div class="card p-3">
+            <h5>Asignar Categoría</h5>
+            <form action="{{ url_for('crear_colaborador_categoria') }}" method="POST">
+                <div class="mb-2"><label>ID Perfil Colaborador</label><input type="number" name="perfil_id" class="form-control" required></div>
+                <div class="mb-2"><label>ID Categoría</label><input type="number" name="categoria_id" class="form-control" required></div>
+                <button type="submit" class="btn btn-primary w-100 mt-2">Guardar</button>
+            </form>
+        </div>
+    </div>
+    <div class="col-md-8">
+        <div class="card p-3">
+            <table class="table table-dark table-striped">
+                <thead><tr><th>Perfil ID</th><th>Categoría ID</th><th>Acciones</th></tr></thead>
+                <tbody>
+                    {% for item in lista %}
+                    <tr>
+                        <td>{{ item.perfil_id }}</td>
+                        <td>{{ item.categoria_id }}</td>
+                        <td><a href="{{ url_for('eliminar_colaborador_categoria', perfil_id=item.perfil_id, categoria_id=item.categoria_id) }}" class="btn btn-danger btn-sm" onclick="return confirm('¿Eliminar?')">Eliminar</a></td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}

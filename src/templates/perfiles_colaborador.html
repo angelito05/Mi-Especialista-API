@@ -1,0 +1,41 @@
+{% extends 'base.html' %}
+{% block content %}
+<h2>Perfiles Colaborador</h2>
+<div class="row mt-4">
+    <div class="col-md-4">
+        <div class="card p-3">
+            <h5>Nuevo Perfil</h5>
+            <form action="{{ url_for('crear_perfil_colaborador') }}" method="POST">
+                <div class="mb-2"><label>Descripción</label><textarea name="descripcion" class="form-control"></textarea></div>
+                <div class="mb-2"><label>Años de Experiencia</label><input type="number" name="experiencia_anios" class="form-control"></div>
+                <div class="mb-2"><label>Zona</label><input type="text" name="zona" class="form-control"></div>
+                <div class="mb-2 form-check"><input type="checkbox" name="disponible" class="form-check-input" id="dispCheck" checked><label class="form-check-label" for="dispCheck">Disponible</label></div>
+                <div class="mb-2 form-check"><input type="checkbox" name="identidad_verificada" class="form-check-input" id="idCheck"><label class="form-check-label" for="idCheck">Identidad Verificada</label></div>
+                <div class="mb-2"><label>Calificación Promedio</label><input type="number" step="0.01" name="calificacion_promedio" class="form-control"></div>
+                <div class="mb-2"><label>Trabajos Realizados</label><input type="number" name="trabajos_realizados" class="form-control"></div>
+                <button type="submit" class="btn btn-primary w-100 mt-2">Guardar</button>
+            </form>
+        </div>
+    </div>
+    <div class="col-md-8">
+        <div class="card p-3">
+            <table class="table table-dark table-striped">
+                <thead><tr><th>ID</th><th>Zona</th><th>Exp (Años)</th><th>Disponible</th><th>Verificado</th><th>Calificación</th><th>Acciones</th></tr></thead>
+                <tbody>
+                    {% for item in lista %}
+                    <tr>
+                        <td>{{ item.perfil_id }}</td>
+                        <td>{{ item.zona }}</td>
+                        <td>{{ item.experiencia_anios }}</td>
+                        <td>{{ 'Sí' if item.disponible else 'No' }}</td>
+                        <td>{{ 'Sí' if item.identidad_verificada else 'No' }}</td>
+                        <td>{{ item.calificacion_promedio }}</td>
+                        <td><a href="{{ url_for('eliminar_perfil_colaborador', id=item.perfil_id) }}" class="btn btn-danger btn-sm" onclick="return confirm('¿Eliminar?')">Eliminar</a></td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}

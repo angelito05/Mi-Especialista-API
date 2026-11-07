@@ -1,0 +1,38 @@
+{% extends 'base.html' %}
+{% block content %}
+<h2>Reseñas</h2>
+<div class="row mt-4">
+    <div class="col-md-4">
+        <div class="card p-3">
+            <h5>Nueva Reseña</h5>
+            <form action="{{ url_for('crear_resena') }}" method="POST">
+                <div class="mb-2"><label>ID Solicitud</label><input type="number" name="solicitud_id" class="form-control"></div>
+                <div class="mb-2"><label>ID Cliente</label><input type="number" name="cliente_id" class="form-control"></div>
+                <div class="mb-2"><label>ID Colaborador</label><input type="number" name="colaborador_id" class="form-control"></div>
+                <div class="mb-2"><label>Calificación (1-5)</label><input type="number" min="1" max="5" name="calificacion" class="form-control"></div>
+                <div class="mb-2"><label>Comentario</label><textarea name="comentario" class="form-control"></textarea></div>
+                <button type="submit" class="btn btn-primary w-100 mt-2">Guardar</button>
+            </form>
+        </div>
+    </div>
+    <div class="col-md-8">
+        <div class="card p-3">
+            <table class="table table-dark table-striped">
+                <thead><tr><th>ID</th><th>Solicitud</th><th>Cliente</th><th>Colaborador</th><th>Calificación</th><th>Acciones</th></tr></thead>
+                <tbody>
+                    {% for item in lista %}
+                    <tr>
+                        <td>{{ item.resena_id }}</td>
+                        <td>{{ item.solicitud_id }}</td>
+                        <td>{{ item.cliente_id }}</td>
+                        <td>{{ item.colaborador_id }}</td>
+                        <td>{{ item.calificacion }}</td>
+                        <td><a href="{{ url_for('eliminar_resena', id=item.resena_id) }}" class="btn btn-danger btn-sm" onclick="return confirm('¿Eliminar?')">Eliminar</a></td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}
