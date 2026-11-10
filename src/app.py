@@ -200,9 +200,10 @@ def parse_time(val):
 class Usuario(db.Model):
     __tablename__ = 'usuarios'
     usuario_id = db.Column(db.BigInteger, primary_key=True)
-    telefono = db.Column(db.String(20), unique=True, nullable=False)
+    nombre = db.Column(db.String(100), nullable=False)  # Campo nombre
+    telefono = db.Column(db.String(20), nullable=False)
     password_hash = db.Column(db.String(255), nullable=False)
-    rol = db.Column(db.String(50), default='cliente')
+    rol = db.Column(db.String(50), nullable=False, default='cliente')
     foto_perfil = db.Column(db.String(255))
     estado_cuenta = db.Column(db.String(50), default='activo')
     fecha_registro = db.Column(db.DateTime, default=datetime.utcnow)
@@ -211,6 +212,7 @@ class Usuario(db.Model):
         # NUNCA exponemos password_hash al serializar el usuario por seguridad
         return {
             'usuario_id': self.usuario_id,
+            'nombre': self.nombre,
             'telefono': self.telefono,
             'rol': self.rol,
             'foto_perfil': self.foto_perfil,
@@ -1064,6 +1066,7 @@ def listar_usuarios():
 def crear_usuario():
     pwd = request.form.get('password_hash') or '123456'
     item = Usuario(
+        nombre=request.form.get('nombre'),
         telefono=request.form.get('telefono'),
         password_hash=generate_password_hash(pwd, method='pbkdf2:sha256'),
         rol=request.form.get('rol', 'cliente'),
