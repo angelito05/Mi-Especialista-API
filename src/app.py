@@ -425,6 +425,24 @@ with app.app_context():
         print(f"Nota al inicializar base de datos: {e}")
 
 # ==========================================
+# HEALTH CHECK — requerido por Fly.io
+# ==========================================
+
+@app.route('/health', methods=['GET'])
+def health_check():
+    """
+    Endpoint de salud para Fly.io y otros orquestadores
+    ---
+    tags:
+      - Sistema
+    responses:
+      200:
+        description: Servicio operativo
+    """
+    return jsonify({'status': 'ok', 'service': 'proyecto-api'}), 200
+
+
+# ==========================================
 # ENDPOINTS DE AUTENTICACIÓN (JWT & SEGURIDAD)
 # ==========================================
 
