@@ -1,2 +1,1 @@
-web: gunicorn src.app:app
-
+web: gunicorn src.app:app --bind "0.0.0.0:${PORT:-8080}" --workers 2 --threads 4 --timeout 120

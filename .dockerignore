@@ -11,4 +11,8 @@ __pycache__/
 .vscode/
 .idea/
 *.log
+README.md
+Procfile
+.github/
+*.sqlite3
 

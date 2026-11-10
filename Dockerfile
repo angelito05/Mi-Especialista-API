@@ -4,7 +4,8 @@ FROM python:3.12-slim
 # Variables de entorno para Python en contenedores
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
-ENV PORT=5000
+# Puerto por defecto; Fly.io sobreescribe esta variable en runtime
+ENV PORT=8080
 
 # Directorio de trabajo en el contenedor
 WORKDIR /app
@@ -19,12 +20,12 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
-# Copiar el código del proyecto
+# Copiar el código del proyecto (sin venv, .env, etc. — ver .dockerignore)
 COPY . .
 
-# Exponer el puerto configurado
-EXPOSE 5000
+# Exponer el puerto dinámico
+EXPOSE 8080
 
-# Comando para iniciar la API con Gunicorn
-CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "2", "--threads", "4", "src.app:app"]
+# Gunicorn lee $PORT en runtime; Fly.io lo inyecta automáticamente
+CMD gunicorn --bind "0.0.0.0:${PORT}" --workers 2 --threads 4 --timeout 120 src.app:app
 
