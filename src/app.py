@@ -41,7 +41,6 @@ try:
         storage_uri="memory://"
     )
 except ImportError:
-    # Si la librería aún no está instalada, se define un sustituto nulo para no romper la app
     class LimiterDummy:
         def limit(self, *args, **kwargs):
             return lambda f: f
@@ -87,8 +86,8 @@ swagger_template = {
     "swagger": "2.0",
     "info": {
         "title": "API Backend Segura - Aplicación Android",
-        "description": "API REST protegida con JWT, CORS, hasheo criptográfico PBKDF2 y variables de entorno para producción en la nube.",
-        "version": "2.0.0",
+        "description": "API REST conectada a base de datos PostgreSQL, protegida con JWT, CORS y validaciones de integridad referencial.",
+        "version": "2.1.0",
         "contact": {
             "name": "Equipo de Desarrollo"
         }
@@ -144,8 +143,8 @@ def token_requerido(f):
             usuario_actual = Usuario.query.get(datos['usuario_id'])
             if not usuario_actual:
                 return jsonify({'error': 'Usuario no válido o eliminado'}), 401
-            if usuario_actual.estado_cuenta == 'suspendido':
-                return jsonify({'error': 'Tu cuenta se encuentra suspendida temporalmente'}), 403
+            if usuario_actual.estado_cuenta and usuario_actual.estado_cuenta.upper() in ('SUSPENDIDO', 'SUSPENDIDA', 'INACTIVA'):
+                return jsonify({'error': 'Tu cuenta se encuentra inactiva o suspendida'}), 403
         except jwt.ExpiredSignatureError:
             return jsonify({'error': 'El token ha expirado. Inicia sesión nuevamente'}), 401
         except jwt.InvalidTokenError:
@@ -156,10 +155,12 @@ def token_requerido(f):
 
 def rol_requerido(*roles_permitidos):
     """Decorador para control de acceso basado en roles (RBAC)."""
+    roles_upper = [r.upper() for r in roles_permitidos] + ['ADMIN']
     def decorador_externo(f):
         @wraps(f)
         def decorador(usuario_actual, *args, **kwargs):
-            if usuario_actual.rol not in roles_permitidos and usuario_actual.rol != 'admin':
+            rol_actual = (usuario_actual.rol or '').upper()
+            if rol_actual not in roles_upper:
                 return jsonify({'error': f'Acceso denegado. Se requiere rol: {", ".join(roles_permitidos)}'}), 403
             return f(usuario_actual, *args, **kwargs)
         return decorador
@@ -194,25 +195,26 @@ def parse_time(val):
     return None
 
 # ==========================================
-# MODELOS DE LA BASE DE DATOS
+# MODELOS DE LA BASE DE DATOS (ESQUEMA POSTGRESQL EXACTO)
 # ==========================================
 
 class Usuario(db.Model):
     __tablename__ = 'usuarios'
     usuario_id = db.Column(db.BigInteger, primary_key=True)
-    nombre = db.Column(db.String(100), nullable=False)  # Campo nombre
-    telefono = db.Column(db.String(20), nullable=False)
+    nombre = db.Column(db.String(100), nullable=False)
+    correo = db.Column(db.String(150), unique=True, nullable=False)
+    telefono = db.Column(db.String(20), unique=True, nullable=True)
     password_hash = db.Column(db.String(255), nullable=False)
-    rol = db.Column(db.String(50), nullable=False, default='cliente')
-    foto_perfil = db.Column(db.String(255))
-    estado_cuenta = db.Column(db.String(50), default='activo')
-    fecha_registro = db.Column(db.DateTime, default=datetime.utcnow)
+    rol = db.Column(db.String(50), nullable=False, default='CLIENTE')
+    foto_perfil = db.Column(db.String(255), nullable=True)
+    estado_cuenta = db.Column(db.String(50), nullable=False, default='ACTIVA')
+    fecha_registro = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
 
     def to_dict(self):
-        # NUNCA exponemos password_hash al serializar el usuario por seguridad
         return {
             'usuario_id': self.usuario_id,
             'nombre': self.nombre,
+            'correo': self.correo,
             'telefono': self.telefono,
             'rol': self.rol,
             'foto_perfil': self.foto_perfil,
@@ -223,11 +225,11 @@ class Usuario(db.Model):
 class Billetera(db.Model):
     __tablename__ = 'billeteras'
     billetera_id = db.Column(db.BigInteger, primary_key=True)
-    usuario_id = db.Column(db.BigInteger, nullable=False)
-    saldo = db.Column(db.Numeric(10, 2), default=0.00)
-    moneda = db.Column(db.String(10), default='USD')
-    estado = db.Column(db.String(20), default='activo')
-    fecha_creacion = db.Column(db.DateTime, default=datetime.utcnow)
+    usuario_id = db.Column(db.BigInteger, db.ForeignKey('usuarios.usuario_id'), nullable=False)
+    saldo = db.Column(db.Numeric(10, 2), nullable=False, default=0.00)
+    moneda = db.Column(db.String(10), nullable=False, default='USD')
+    estado = db.Column(db.String(20), nullable=False, default='activo')
+    fecha_creacion = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
 
     def to_dict(self):
         return {
@@ -243,9 +245,9 @@ class Categoria(db.Model):
     __tablename__ = 'categorias'
     categoria_id = db.Column(db.BigInteger, primary_key=True)
     nombre = db.Column(db.String(100), nullable=False)
-    descripcion = db.Column(db.Text)
-    icono = db.Column(db.String(100))
-    activo = db.Column(db.Boolean, default=True)
+    descripcion = db.Column(db.Text, nullable=True)
+    icono = db.Column(db.String(100), nullable=True)
+    activo = db.Column(db.Boolean, nullable=False, default=True)
 
     def to_dict(self):
         return {
@@ -256,10 +258,35 @@ class Categoria(db.Model):
             'activo': self.activo
         }
 
+class PerfilColaborador(db.Model):
+    __tablename__ = 'perfiles_colaborador'
+    perfil_id = db.Column(db.BigInteger, primary_key=True)
+    usuario_id = db.Column(db.BigInteger, db.ForeignKey('usuarios.usuario_id'), nullable=False)
+    descripcion = db.Column(db.Text, nullable=True)
+    experiencia_anios = db.Column(db.Integer, nullable=False, default=0)
+    zona = db.Column(db.String(100), nullable=True)
+    disponible = db.Column(db.Boolean, nullable=False, default=True)
+    identidad_verificada = db.Column(db.Boolean, nullable=False, default=False)
+    calificacion_promedio = db.Column(db.Numeric(3, 2), nullable=False, default=0.00)
+    trabajos_realizados = db.Column(db.Integer, nullable=False, default=0)
+
+    def to_dict(self):
+        return {
+            'perfil_id': self.perfil_id,
+            'usuario_id': self.usuario_id,
+            'descripcion': self.descripcion,
+            'experiencia_anios': self.experiencia_anios,
+            'zona': self.zona,
+            'disponible': self.disponible,
+            'identidad_verificada': self.identidad_verificada,
+            'calificacion_promedio': float(self.calificacion_promedio) if self.calificacion_promedio is not None else 0.0,
+            'trabajos_realizados': self.trabajos_realizados
+        }
+
 class ColaboradorCategoria(db.Model):
     __tablename__ = 'colaborador_categoria'
-    perfil_id = db.Column(db.BigInteger, primary_key=True)
-    categoria_id = db.Column(db.BigInteger, primary_key=True)
+    perfil_id = db.Column(db.BigInteger, db.ForeignKey('perfiles_colaborador.perfil_id'), primary_key=True)
+    categoria_id = db.Column(db.BigInteger, db.ForeignKey('categorias.categoria_id'), primary_key=True)
 
     def to_dict(self):
         return {
@@ -267,40 +294,73 @@ class ColaboradorCategoria(db.Model):
             'categoria_id': self.categoria_id
         }
 
-class Incidencia(db.Model):
-    __tablename__ = 'incidencias'
-    incidencia_id = db.Column(db.BigInteger, primary_key=True)
-    usuario_id = db.Column(db.BigInteger)
-    solicitud_id = db.Column(db.BigInteger)
-    soporte_id = db.Column(db.BigInteger)
-    tipo = db.Column(db.String(50))
-    descripcion = db.Column(db.Text)
-    estado = db.Column(db.String(50), default='abierto')
-    fecha_reporte = db.Column(db.DateTime, default=datetime.utcnow)
+class Solicitud(db.Model):
+    __tablename__ = 'solicitudes'
+    solicitud_id = db.Column(db.BigInteger, primary_key=True)
+    cliente_id = db.Column(db.BigInteger, db.ForeignKey('usuarios.usuario_id'), nullable=False)
+    colaborador_id = db.Column(db.BigInteger, db.ForeignKey('usuarios.usuario_id'), nullable=False)
+    categoria_id = db.Column(db.BigInteger, db.ForeignKey('categorias.categoria_id'), nullable=False)
+    titulo = db.Column(db.String(150), nullable=False)
+    descripcion = db.Column(db.Text, nullable=True)
+    direccion = db.Column(db.Text, nullable=False)
+    fecha_servicio = db.Column(db.Date, nullable=False)
+    hora_servicio = db.Column(db.Time, nullable=False)
+    estado = db.Column(db.String(50), nullable=False, default='PENDIENTE')
+    fecha_solicitud = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
 
     def to_dict(self):
         return {
-            'incidencia_id': self.incidencia_id,
+            'solicitud_id': self.solicitud_id,
+            'cliente_id': self.cliente_id,
+            'colaborador_id': self.colaborador_id,
+            'categoria_id': self.categoria_id,
+            'titulo': self.titulo,
+            'descripcion': self.descripcion,
+            'direccion': self.direccion,
+            'fecha_servicio': self.fecha_servicio.isoformat() if self.fecha_servicio else None,
+            'hora_servicio': self.hora_servicio.strftime('%H:%M:%S') if self.hora_servicio else None,
+            'estado': self.estado,
+            'fecha_solicitud': self.fecha_solicitud.isoformat() if self.fecha_solicitud else None
+        }
+
+class Movimiento(db.Model):
+    __tablename__ = 'movimientos'
+    movimiento_id = db.Column(db.BigInteger, primary_key=True)
+    billetera_id = db.Column(db.BigInteger, db.ForeignKey('billeteras.billetera_id'), nullable=False)
+    usuario_id = db.Column(db.BigInteger, db.ForeignKey('usuarios.usuario_id'), nullable=False)
+    solicitud_id = db.Column(db.BigInteger, db.ForeignKey('solicitudes.solicitud_id'), nullable=True)
+    tipo = db.Column(db.String(50), nullable=False)
+    monto = db.Column(db.Numeric(10, 2), nullable=False)
+    comision = db.Column(db.Numeric(10, 2), nullable=False, default=0.00)
+    monto_neto = db.Column(db.Numeric(10, 2), nullable=False)
+    estado = db.Column(db.String(50), nullable=False, default='completado')
+    fecha = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+
+    def to_dict(self):
+        return {
+            'movimiento_id': self.movimiento_id,
+            'billetera_id': self.billetera_id,
             'usuario_id': self.usuario_id,
             'solicitud_id': self.solicitud_id,
-            'soporte_id': self.soporte_id,
             'tipo': self.tipo,
-            'descripcion': self.descripcion,
+            'monto': float(self.monto) if self.monto is not None else 0.0,
+            'comision': float(self.comision) if self.comision is not None else 0.0,
+            'monto_neto': float(self.monto_neto) if self.monto_neto is not None else 0.0,
             'estado': self.estado,
-            'fecha_reporte': self.fecha_reporte.isoformat() if self.fecha_reporte else None
+            'fecha': self.fecha.isoformat() if self.fecha else None
         }
 
 class Mensaje(db.Model):
     __tablename__ = 'mensajes'
     mensaje_id = db.Column(db.BigInteger, primary_key=True)
-    solicitud_id = db.Column(db.BigInteger)
-    emisor_id = db.Column(db.BigInteger)
-    receptor_id = db.Column(db.BigInteger)
-    tipo = db.Column(db.String(50), default='texto')
-    contenido = db.Column(db.Text)
-    archivo_url = db.Column(db.String(255))
-    leido = db.Column(db.Boolean, default=False)
-    fecha_envio = db.Column(db.DateTime, default=datetime.utcnow)
+    solicitud_id = db.Column(db.BigInteger, db.ForeignKey('solicitudes.solicitud_id'), nullable=False)
+    emisor_id = db.Column(db.BigInteger, db.ForeignKey('usuarios.usuario_id'), nullable=False)
+    receptor_id = db.Column(db.BigInteger, db.ForeignKey('usuarios.usuario_id'), nullable=False)
+    tipo = db.Column(db.String(50), nullable=False, default='texto')
+    contenido = db.Column(db.Text, nullable=True)
+    archivo_url = db.Column(db.String(255), nullable=True)
+    leido = db.Column(db.Boolean, nullable=False, default=False)
+    fecha_envio = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
 
     def to_dict(self):
         return {
@@ -315,76 +375,38 @@ class Mensaje(db.Model):
             'fecha_envio': self.fecha_envio.isoformat() if self.fecha_envio else None
         }
 
-class Movimiento(db.Model):
-    __tablename__ = 'movimientos'
-    movimiento_id = db.Column(db.BigInteger, primary_key=True)
-    usuario_id = db.Column(db.BigInteger, nullable=False)
-    solicitud_id = db.Column(db.BigInteger)
-    tipo = db.Column(db.String(50), nullable=False) # 'ingreso', 'egreso', 'comision'
-    monto = db.Column(db.Numeric(10, 2), nullable=False)
-    comision = db.Column(db.Numeric(10, 2), default=0.00)
-    monto_neto = db.Column(db.Numeric(10, 2), nullable=False)
-    estado = db.Column(db.String(50), default='completado')
-    fecha = db.Column(db.DateTime, default=datetime.utcnow)
+class Incidencia(db.Model):
+    __tablename__ = 'incidencias'
+    incidencia_id = db.Column(db.BigInteger, primary_key=True)
+    usuario_id = db.Column(db.BigInteger, db.ForeignKey('usuarios.usuario_id'), nullable=False)
+    solicitud_id = db.Column(db.BigInteger, db.ForeignKey('solicitudes.solicitud_id'), nullable=True)
+    soporte_id = db.Column(db.BigInteger, db.ForeignKey('usuarios.usuario_id'), nullable=True)
+    tipo = db.Column(db.String(50), nullable=False)
+    descripcion = db.Column(db.Text, nullable=False)
+    estado = db.Column(db.String(50), nullable=False, default='abierto')
+    fecha_reporte = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
 
     def to_dict(self):
         return {
-            'movimiento_id': self.movimiento_id,
+            'incidencia_id': self.incidencia_id,
             'usuario_id': self.usuario_id,
             'solicitud_id': self.solicitud_id,
+            'soporte_id': self.soporte_id,
             'tipo': self.tipo,
-            'monto': float(self.monto) if self.monto is not None else 0.0,
-            'comision': float(self.comision) if self.comision is not None else 0.0,
-            'monto_neto': float(self.monto_neto) if self.monto_neto is not None else 0.0,
-            'estado': self.estado,
-            'fecha': self.fecha.isoformat() if self.fecha else None
-        }
-
-class PerfilColaborador(db.Model):
-    __tablename__ = 'perfiles_colaborador'
-    perfil_id = db.Column(db.BigInteger, primary_key=True)
-    descripcion = db.Column(db.Text)
-    experiencia_anios = db.Column(db.Integer)
-    zona = db.Column(db.String(100))
-    disponible = db.Column(db.Boolean, default=True)
-    identidad_verificada = db.Column(db.Boolean, default=False)
-    calificacion_promedio = db.Column(db.Numeric(3, 2), default=0.00)
-    trabajos_realizados = db.Column(db.Integer, default=0)
-
-    def to_dict(self):
-        return {
-            'perfil_id': self.perfil_id,
             'descripcion': self.descripcion,
-            'experiencia_anios': self.experiencia_anios,
-            'zona': self.zona,
-            'disponible': self.disponible,
-            'identidad_verificada': self.identidad_verificada,
-            'calificacion_promedio': float(self.calificacion_promedio) if self.calificacion_promedio is not None else 0.0,
-            'trabajos_realizados': self.trabajos_realizados
-        }
-
-class Registro(db.Model):
-    __tablename__ = 'registros'
-    id = db.Column(db.Integer, primary_key=True)
-    titulo = db.Column(db.String(150))
-    descripcion = db.Column(db.Text)
-
-    def to_dict(self):
-        return {
-            'id': self.id,
-            'titulo': self.titulo,
-            'descripcion': self.descripcion
+            'estado': self.estado,
+            'fecha_reporte': self.fecha_reporte.isoformat() if self.fecha_reporte else None
         }
 
 class Resena(db.Model):
     __tablename__ = 'resenas'
     resena_id = db.Column(db.BigInteger, primary_key=True)
-    solicitud_id = db.Column(db.BigInteger)
-    cliente_id = db.Column(db.BigInteger)
-    colaborador_id = db.Column(db.BigInteger)
-    calificacion = db.Column(db.Integer)
-    comentario = db.Column(db.Text)
-    fecha = db.Column(db.DateTime, default=datetime.utcnow)
+    solicitud_id = db.Column(db.BigInteger, db.ForeignKey('solicitudes.solicitud_id'), nullable=False)
+    cliente_id = db.Column(db.BigInteger, db.ForeignKey('usuarios.usuario_id'), nullable=False)
+    colaborador_id = db.Column(db.BigInteger, db.ForeignKey('usuarios.usuario_id'), nullable=False)
+    calificacion = db.Column(db.Integer, nullable=False)
+    comentario = db.Column(db.Text, nullable=True)
+    fecha = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
 
     def to_dict(self):
         return {
@@ -397,34 +419,18 @@ class Resena(db.Model):
             'fecha': self.fecha.isoformat() if self.fecha else None
         }
 
-class Solicitud(db.Model):
-    __tablename__ = 'solicitudes'
-    solicitud_id = db.Column(db.BigInteger, primary_key=True)
+class Registro(db.Model):
+    __tablename__ = 'registros'
+    id = db.Column(db.Integer, primary_key=True)
     titulo = db.Column(db.String(150), nullable=False)
-    descripcion = db.Column(db.Text)
-    direccion = db.Column(db.Text)
-    fecha_servicio = db.Column(db.Date)
-    hora_servicio = db.Column(db.Time)
-    estado = db.Column(db.String(50), default='pendiente')
-    fecha_solicitud = db.Column(db.DateTime, default=datetime.utcnow)
+    descripcion = db.Column(db.Text, nullable=False)
 
     def to_dict(self):
         return {
-            'solicitud_id': self.solicitud_id,
+            'id': self.id,
             'titulo': self.titulo,
-            'descripcion': self.descripcion,
-            'direccion': self.direccion,
-            'fecha_servicio': self.fecha_servicio.isoformat() if self.fecha_servicio else None,
-            'hora_servicio': self.hora_servicio.strftime('%H:%M:%S') if self.hora_servicio else None,
-            'estado': self.estado,
-            'fecha_solicitud': self.fecha_solicitud.isoformat() if self.fecha_solicitud else None
+            'descripcion': self.descripcion
         }
-
-with app.app_context():
-    try:
-        db.create_all()
-    except Exception as e:
-        print(f"Nota al inicializar base de datos: {e}")
 
 # ==========================================
 # HEALTH CHECK — requerido por Fly.io
@@ -433,7 +439,7 @@ with app.app_context():
 @app.route('/health', methods=['GET'])
 def health_check():
     """
-    Endpoint de salud para Fly.io y otros orquestadores
+    Endpoint de salud para Fly.io y monitores de uptime
     ---
     tags:
       - Sistema
@@ -443,7 +449,6 @@ def health_check():
     """
     return jsonify({'status': 'ok', 'service': 'proyecto-api'}), 200
 
-
 # ==========================================
 # ENDPOINTS DE AUTENTICACIÓN (JWT & SEGURIDAD)
 # ==========================================
@@ -451,7 +456,7 @@ def health_check():
 @app.route('/api/auth/registro', methods=['POST'])
 def api_auth_registro():
     """
-    Registro seguro de nuevo usuario con contraseña hasheada
+    Registro seguro de nuevo usuario (Crea Usuario y Billetera)
     ---
     tags:
       - Autenticación
@@ -462,18 +467,26 @@ def api_auth_registro():
         schema:
           type: object
           required:
-            - telefono
+            - nombre
+            - correo
             - password
           properties:
+            nombre:
+              type: string
+              example: "Juan Pérez"
+            correo:
+              type: string
+              example: "juan.perez@example.com"
             telefono:
               type: string
               example: "7441234567"
             password:
               type: string
-              example: "ContrasenaSegura#2026"
+              example: "MiClaveSegura#2026"
             rol:
               type: string
-              example: "cliente"
+              enum: [CLIENTE, COLABORADOR, ADMIN]
+              example: "CLIENTE"
             foto_perfil:
               type: string
               example: "https://ejemplo.com/avatar.jpg"
@@ -481,38 +494,44 @@ def api_auth_registro():
       201:
         description: Usuario registrado y token generado con éxito
       400:
-        description: Datos faltantes o inválidos
+        description: Datos faltantes o contraseña muy corta
       409:
-        description: El teléfono ya está registrado
+        description: Correo o teléfono ya registrado
     """
     data = get_request_data()
-    telefono = (data.get('telefono') or '').strip()
+    nombre = (data.get('nombre') or '').strip()
+    correo = (data.get('correo') or '').strip().lower()
+    telefono = (data.get('telefono') or '').strip() or None
     password = data.get('password') or data.get('password_hash')
+    rol = (data.get('rol') or 'CLIENTE').upper()
 
-    if not telefono or not password:
-        return jsonify({'error': 'El teléfono y la contraseña son obligatorios'}), 400
+    if not nombre or not correo or not password:
+        return jsonify({'error': 'Los campos nombre, correo y password son obligatorios'}), 400
 
     if len(password) < 6:
         return jsonify({'error': 'La contraseña debe tener al menos 6 caracteres'}), 400
 
-    # Evitar duplicados
-    if Usuario.query.filter_by(telefono=telefono).first():
-        return jsonify({'error': 'Este número de teléfono ya se encuentra registrado'}), 409
+    if Usuario.query.filter_by(correo=correo).first():
+        return jsonify({'error': f'El correo {correo} ya se encuentra registrado'}), 409
 
-    # Hasheo criptográfico con salt automático
+    if telefono and Usuario.query.filter_by(telefono=telefono).first():
+        return jsonify({'error': f'El teléfono {telefono} ya se encuentra registrado'}), 409
+
     hash_seguro = generate_password_hash(password, method='pbkdf2:sha256')
 
     nuevo_usuario = Usuario(
+        nombre=nombre,
+        correo=correo,
         telefono=telefono,
         password_hash=hash_seguro,
-        rol=data.get('rol', 'cliente'),
+        rol=rol,
         foto_perfil=data.get('foto_perfil'),
-        estado_cuenta='activo'
+        estado_cuenta='ACTIVA'
     )
     db.session.add(nuevo_usuario)
-    db.session.flush() # Obtiene el nuevo ID sin cerrar transacción
+    db.session.flush()
 
-    # Crear billetera inicial automáticamente para el usuario
+    # Billetera inicial obligatoria para cada usuario
     billetera_inicial = Billetera(
         usuario_id=nuevo_usuario.usuario_id,
         saldo=0.00,
@@ -535,7 +554,7 @@ def api_auth_registro():
 @limiter.limit("10 per minute")
 def api_auth_login():
     """
-    Inicio de sesión seguro para Android (Retorna Token JWT)
+    Inicio de sesión seguro para Android (por correo o teléfono)
     ---
     tags:
       - Autenticación
@@ -546,15 +565,16 @@ def api_auth_login():
         schema:
           type: object
           required:
-            - telefono
+            - identificador
             - password
           properties:
-            telefono:
+            identificador:
               type: string
-              example: "7441234567"
+              description: Correo electrónico o número de teléfono registrado
+              example: "juan.perez@example.com"
             password:
               type: string
-              example: "ContrasenaSegura#2026"
+              example: "MiClaveSegura#2026"
     responses:
       200:
         description: Login exitoso, entrega el token Bearer
@@ -564,25 +584,24 @@ def api_auth_login():
         description: Demasiados intentos fallidos (Rate limit)
     """
     data = get_request_data()
-    telefono = (data.get('telefono') or '').strip()
+    identificador = (data.get('identificador') or data.get('correo') or data.get('telefono') or '').strip()
     password = data.get('password') or data.get('password_hash')
 
-    if not telefono or not password:
-        return jsonify({'error': 'Introduce teléfono y contraseña'}), 400
+    if not identificador or not password:
+        return jsonify({'error': 'Introduce tu correo o teléfono y tu contraseña'}), 400
 
-    usuario = Usuario.query.filter_by(telefono=telefono).first()
+    usuario = Usuario.query.filter(
+        (Usuario.correo == identificador.lower()) | (Usuario.telefono == identificador)
+    ).first()
 
-    # Prevenir ataques de enumeración y comprobar hash
     if not usuario or not check_password_hash(usuario.password_hash, password):
-        # Compatibilidad temporal: si la contraseña estaba guardada en texto plano anteriormente
         if usuario and usuario.password_hash == password:
-            # Auto-actualizar a hash seguro en el primer login
             usuario.password_hash = generate_password_hash(password, method='pbkdf2:sha256')
             db.session.commit()
         else:
-            return jsonify({'error': 'Teléfono o contraseña incorrectos'}), 401
+            return jsonify({'error': 'Credenciales incorrectas'}), 401
 
-    if usuario.estado_cuenta == 'suspendido':
+    if usuario.estado_cuenta and usuario.estado_cuenta.upper() in ('SUSPENDIDO', 'SUSPENDIDA', 'INACTIVA'):
         return jsonify({'error': 'Tu cuenta está suspendida'}), 403
 
     token = generar_token(usuario.usuario_id, usuario.rol)
@@ -608,9 +627,7 @@ def api_auth_perfil(usuario_actual):
       - Bearer: []
     responses:
       200:
-        description: Perfil y saldo del usuario
-      401:
-        description: Token inválido o ausente
+        description: Perfil y billetera del usuario
     """
     billetera = Billetera.query.filter_by(usuario_id=usuario_actual.usuario_id).first()
     return jsonify({
@@ -620,38 +637,261 @@ def api_auth_perfil(usuario_actual):
 
 
 # ==========================================
-# ENDPOINTS REST PROTEGIDOS (PARA ANDROID)
+# ENDPOINTS REST DE LA BASE DE DATOS
 # ==========================================
 
-# --- API BILLETERAS Y TRANSACCIONES FINANCIERAS ---
+# --- API USUARIOS ---
+@app.route('/api/usuarios', methods=['GET'])
+@token_requerido
+def api_listar_usuarios(usuario_actual):
+    """Listar usuarios registrados"""
+    usuarios = Usuario.query.all()
+    return jsonify([u.to_dict() for u in usuarios]), 200
+
+@app.route('/api/usuarios/<int:id>', methods=['GET'])
+@token_requerido
+def api_obtener_usuario(usuario_actual, id):
+    """Obtener un usuario por su ID"""
+    usuario = Usuario.query.get_or_404(id)
+    return jsonify(usuario.to_dict()), 200
+
+
+# --- API BILLETERAS ---
 @app.route('/api/billeteras/mi_billetera', methods=['GET'])
 @token_requerido
 def api_mi_billetera(usuario_actual):
-    """
-    Consultar saldo de la billetera propia del usuario en sesión
-    ---
-    tags:
-      - API Billeteras
-    security:
-      - Bearer: []
-    responses:
-      200:
-        description: Billetera del usuario
-    """
+    """Consultar saldo de la billetera propia"""
     billetera = Billetera.query.filter_by(usuario_id=usuario_actual.usuario_id).first()
     if not billetera:
-        # Si no existe, crearla automáticamente
         billetera = Billetera(usuario_id=usuario_actual.usuario_id, saldo=0.00, moneda='USD', estado='activo')
         db.session.add(billetera)
         db.session.commit()
     return jsonify(billetera.to_dict()), 200
 
+@app.route('/api/billeteras', methods=['GET'])
+@token_requerido
+@rol_requerido('admin')
+def api_listar_billeteras(usuario_actual):
+    """Listar todas las billeteras (Solo Administrador)"""
+    billeteras = Billetera.query.all()
+    return jsonify([b.to_dict() for b in billeteras]), 200
+
+
+# --- API CATEGORÍAS ---
+@app.route('/api/categorias', methods=['GET'])
+def api_listar_categorias():
+    """
+    Listar catálogo de categorías de servicio activas
+    ---
+    tags:
+      - API Categorías
+    responses:
+      200:
+        description: Lista de categorías
+    """
+    items = Categoria.query.filter_by(activo=True).all()
+    return jsonify([c.to_dict() for c in items]), 200
+
+@app.route('/api/categorias', methods=['POST'])
+@token_requerido
+@rol_requerido('admin')
+def api_crear_categoria(usuario_actual):
+    """
+    Crear una nueva categoría de servicio (Solo Administrador)
+    ---
+    tags:
+      - API Categorías
+    security:
+      - Bearer: []
+    parameters:
+      - in: body
+        name: body
+        required: true
+        schema:
+          type: object
+          required:
+            - nombre
+          properties:
+            nombre:
+              type: string
+              example: "Plomería"
+            descripcion:
+              type: string
+              example: "Instalación y reparación de tuberías"
+            icono:
+              type: string
+              example: "pipe-wrench"
+            activo:
+              type: boolean
+              example: true
+    responses:
+      201:
+        description: Categoría creada
+    """
+    data = get_request_data()
+    nombre = (data.get('nombre') or '').strip()
+    if not nombre:
+        return jsonify({'error': 'El nombre de la categoría es obligatorio'}), 400
+    item = Categoria(
+        nombre=nombre,
+        descripcion=data.get('descripcion'),
+        icono=data.get('icono'),
+        activo=bool(data.get('activo', True))
+    )
+    db.session.add(item)
+    db.session.commit()
+    return jsonify(item.to_dict()), 201
+
+
+# --- API SOLICITUDES DE SERVICIO ---
+@app.route('/api/solicitudes', methods=['GET'])
+def api_listar_solicitudes():
+    """
+    Listar solicitudes de servicio
+    ---
+    tags:
+      - API Solicitudes
+    responses:
+      200:
+        description: Lista de solicitudes
+    """
+    solicitudes = Solicitud.query.order_by(Solicitud.fecha_solicitud.desc()).all()
+    return jsonify([s.to_dict() for s in solicitudes]), 200
+
+@app.route('/api/solicitudes', methods=['POST'])
+@token_requerido
+def api_crear_solicitud(usuario_actual):
+    """
+    Crear una solicitud de servicio vinculando cliente, colaborador y categoría
+    ---
+    tags:
+      - API Solicitudes
+    security:
+      - Bearer: []
+    parameters:
+      - in: body
+        name: body
+        required: true
+        schema:
+          type: object
+          required:
+            - categoria_id
+            - colaborador_id
+            - titulo
+            - direccion
+            - fecha_servicio
+            - hora_servicio
+          properties:
+            categoria_id:
+              type: integer
+              example: 1
+            colaborador_id:
+              type: integer
+              example: 4
+            titulo:
+              type: string
+              example: "Reparación de fuga de agua"
+            descripcion:
+              type: string
+              example: "Fuga debajo del lavamanos en baño principal"
+            direccion:
+              type: string
+              example: "Av. Costera 123, Acapulco"
+            fecha_servicio:
+              type: string
+              example: "2026-11-20"
+            hora_servicio:
+              type: string
+              example: "15:00:00"
+    responses:
+      201:
+        description: Solicitud creada con éxito
+      400:
+        description: Datos faltantes o IDs inválidos
+    """
+    data = get_request_data()
+    categoria_id = data.get('categoria_id')
+    colaborador_id = data.get('colaborador_id')
+    titulo = (data.get('titulo') or '').strip()
+    direccion = (data.get('direccion') or '').strip()
+    fecha_servicio = parse_date(data.get('fecha_servicio'))
+    hora_servicio = parse_time(data.get('hora_servicio'))
+
+    if not categoria_id or not colaborador_id or not titulo or not direccion or not fecha_servicio or not hora_servicio:
+        return jsonify({'error': 'categoria_id, colaborador_id, titulo, direccion, fecha_servicio y hora_servicio son obligatorios'}), 400
+
+    # Verificar que el colaborador y la categoría existan
+    if not Usuario.query.get(colaborador_id):
+        return jsonify({'error': f'El colaborador con ID {colaborador_id} no existe'}), 404
+
+    if not Categoria.query.get(categoria_id):
+        return jsonify({'error': f'La categoría con ID {categoria_id} no existe'}), 404
+
+    item = Solicitud(
+        cliente_id=usuario_actual.usuario_id,
+        colaborador_id=colaborador_id,
+        categoria_id=categoria_id,
+        titulo=titulo,
+        descripcion=data.get('descripcion'),
+        direccion=direccion,
+        fecha_servicio=fecha_servicio,
+        hora_servicio=hora_servicio,
+        estado=data.get('estado', 'PENDIENTE')
+    )
+    db.session.add(item)
+    db.session.commit()
+    return jsonify(item.to_dict()), 201
+
+@app.route('/api/solicitudes/<int:id>', methods=['GET'])
+def api_obtener_solicitud(id):
+    """Obtener detalle de una solicitud por su ID"""
+    solicitud = Solicitud.query.get_or_404(id)
+    return jsonify(solicitud.to_dict()), 200
+
+@app.route('/api/solicitudes/<int:id>', methods=['PUT'])
+@token_requerido
+def api_actualizar_solicitud(usuario_actual, id):
+    """Actualizar estado o datos de una solicitud"""
+    solicitud = Solicitud.query.get_or_404(id)
+    data = get_request_data()
+    if 'titulo' in data: solicitud.titulo = data['titulo']
+    if 'descripcion' in data: solicitud.descripcion = data['descripcion']
+    if 'direccion' in data: solicitud.direccion = data['direccion']
+    if 'colaborador_id' in data: solicitud.colaborador_id = data['colaborador_id']
+    if 'categoria_id' in data: solicitud.categoria_id = data['categoria_id']
+    if 'fecha_servicio' in data: solicitud.fecha_servicio = parse_date(data['fecha_servicio'])
+    if 'hora_servicio' in data: solicitud.hora_servicio = parse_time(data['hora_servicio'])
+    if 'estado' in data: solicitud.estado = data['estado']
+    db.session.commit()
+    return jsonify(solicitud.to_dict()), 200
+
+@app.route('/api/solicitudes/<int:id>', methods=['DELETE'])
+@token_requerido
+@rol_requerido('admin')
+def api_eliminar_solicitud(usuario_actual, id):
+    """Eliminar una solicitud (Solo Administrador)"""
+    solicitud = Solicitud.query.get_or_404(id)
+    db.session.delete(solicitud)
+    db.session.commit()
+    return jsonify({'mensaje': f'Solicitud {id} eliminada'}), 200
+
+
+# --- API MOVIMIENTOS FINANCIEROS ---
+@app.route('/api/movimientos', methods=['GET'])
+@token_requerido
+def api_listar_movimientos(usuario_actual):
+    """Listar movimientos del usuario actual (o todos si es admin)"""
+    if (usuario_actual.rol or '').upper() == 'ADMIN':
+        movs = Movimiento.query.order_by(Movimiento.fecha.desc()).all()
+    else:
+        movs = Movimiento.query.filter_by(usuario_id=usuario_actual.usuario_id).order_by(Movimiento.fecha.desc()).all()
+    return jsonify([m.to_dict() for m in movs]), 200
 
 @app.route('/api/movimientos', methods=['POST'])
 @token_requerido
 def api_crear_movimiento_seguro(usuario_actual):
     """
-    Registrar un movimiento financiero con actualización atómica de saldo
+    Registrar un movimiento financiero con actualización atómica de la billetera
     ---
     tags:
       - API Movimientos
@@ -673,18 +913,16 @@ def api_crear_movimiento_seguro(usuario_actual):
               example: "ingreso"
             monto:
               type: number
-              example: 150.00
+              example: 250.00
             comision:
               type: number
-              example: 5.00
+              example: 10.00
             solicitud_id:
               type: integer
               example: 1
     responses:
       201:
-        description: Movimiento procesado y saldo actualizado
-      400:
-        description: Monto inválido o saldo insuficiente
+        description: Transacción registrada y saldo actualizado
     """
     data = get_request_data()
     tipo = data.get('tipo')
@@ -692,20 +930,19 @@ def api_crear_movimiento_seguro(usuario_actual):
         monto = float(data.get('monto') or 0.0)
         comision = float(data.get('comision') or 0.0)
     except ValueError:
-        return jsonify({'error': 'El monto y comisión deben ser numéricos'}), 400
+        return jsonify({'error': 'El monto y la comisión deben ser numéricos'}), 400
 
     if monto <= 0:
         return jsonify({'error': 'El monto debe ser estrictamente mayor a 0'}), 400
 
-    # Buscar billetera del usuario
     billetera = Billetera.query.filter_by(usuario_id=usuario_actual.usuario_id).first()
     if not billetera:
         billetera = Billetera(usuario_id=usuario_actual.usuario_id, saldo=0.00, moneda='USD', estado='activo')
         db.session.add(billetera)
+        db.session.flush()
 
     monto_neto = monto - comision
 
-    # Validación de fondos para retiros o egresos
     if tipo in ('egreso', 'retiro', 'pago_servicio'):
         if float(billetera.saldo) < monto:
             return jsonify({'error': 'Saldo insuficiente en tu billetera'}), 400
@@ -713,9 +950,14 @@ def api_crear_movimiento_seguro(usuario_actual):
     elif tipo in ('ingreso', 'recarga'):
         billetera.saldo = float(billetera.saldo) + monto_neto
 
+    solicitud_id = data.get('solicitud_id')
+    if solicitud_id and not Solicitud.query.get(solicitud_id):
+        return jsonify({'error': f'La solicitud {solicitud_id} no existe'}), 404
+
     movimiento = Movimiento(
+        billetera_id=billetera.billetera_id,
         usuario_id=usuario_actual.usuario_id,
-        solicitud_id=data.get('solicitud_id'),
+        solicitud_id=solicitud_id,
         tipo=tipo,
         monto=monto,
         comision=comision,
@@ -728,7 +970,7 @@ def api_crear_movimiento_seguro(usuario_actual):
         db.session.commit()
     except Exception as e:
         db.session.rollback()
-        return jsonify({'error': 'Error al procesar la transacción financiera'}), 500
+        return jsonify({'error': f'Error al procesar la transacción: {str(e)}'}), 500
 
     return jsonify({
         'mensaje': 'Transacción completada',
@@ -737,12 +979,12 @@ def api_crear_movimiento_seguro(usuario_actual):
     }), 201
 
 
-# --- API MENSAJES SEGUROS ---
+# --- API MENSAJES ---
 @app.route('/api/mensajes', methods=['POST'])
 @token_requerido
 def api_enviar_mensaje(usuario_actual):
     """
-    Enviar un mensaje privado (Emisor autenticado automáticamente)
+    Enviar un mensaje vinculado a una solicitud
     ---
     tags:
       - API Mensajes
@@ -755,31 +997,45 @@ def api_enviar_mensaje(usuario_actual):
         schema:
           type: object
           required:
+            - solicitud_id
             - receptor_id
             - contenido
           properties:
             solicitud_id:
               type: integer
+              example: 1
             receptor_id:
               type: integer
-              example: 2
+              example: 4
+            tipo:
+              type: string
+              example: "texto"
             contenido:
               type: string
-              example: "Hola, ¿sigue disponible el servicio?"
+              example: "Hola, ¿en cuánto tiempo llegas?"
+            archivo_url:
+              type: string
     responses:
       201:
         description: Mensaje enviado
     """
     data = get_request_data()
+    solicitud_id = data.get('solicitud_id')
     receptor_id = data.get('receptor_id')
     contenido = (data.get('contenido') or '').strip()
 
-    if not receptor_id or not contenido:
-        return jsonify({'error': 'El receptor y el contenido del mensaje son obligatorios'}), 400
+    if not solicitud_id or not receptor_id:
+        return jsonify({'error': 'solicitud_id y receptor_id son obligatorios'}), 400
+
+    if not Solicitud.query.get(solicitud_id):
+        return jsonify({'error': f'La solicitud {solicitud_id} no existe'}), 404
+
+    if not Usuario.query.get(receptor_id):
+        return jsonify({'error': f'El usuario receptor {receptor_id} no existe'}), 404
 
     item = Mensaje(
-        solicitud_id=data.get('solicitud_id'),
-        emisor_id=usuario_actual.usuario_id, # Se asigna desde el JWT para evitar suplantación
+        solicitud_id=solicitud_id,
+        emisor_id=usuario_actual.usuario_id,
         receptor_id=receptor_id,
         tipo=data.get('tipo', 'texto'),
         contenido=contenido,
@@ -790,21 +1046,10 @@ def api_enviar_mensaje(usuario_actual):
     db.session.commit()
     return jsonify(item.to_dict()), 201
 
-
 @app.route('/api/mensajes/mis_mensajes', methods=['GET'])
 @token_requerido
 def api_mis_mensajes(usuario_actual):
-    """
-    Obtener solo los mensajes enviados o recibidos por el usuario en sesión
-    ---
-    tags:
-      - API Mensajes
-    security:
-      - Bearer: []
-    responses:
-      200:
-        description: Lista de mensajes privados del usuario
-    """
+    """Listar mensajes enviados o recibidos por el usuario en sesión"""
     mensajes = Mensaje.query.filter(
         (Mensaje.emisor_id == usuario_actual.usuario_id) | 
         (Mensaje.receptor_id == usuario_actual.usuario_id)
@@ -812,29 +1057,21 @@ def api_mis_mensajes(usuario_actual):
     return jsonify([m.to_dict() for m in mensajes]), 200
 
 
-# --- API SOLICITUDES ---
-@app.route('/api/solicitudes', methods=['GET'])
-def api_listar_solicitudes():
-    """
-    Listar todas las solicitudes disponibles
-    ---
-    tags:
-      - API Solicitudes
-    responses:
-      200:
-        description: Lista de solicitudes
-    """
-    solicitudes = Solicitud.query.all()
-    return jsonify([s.to_dict() for s in solicitudes]), 200
+# --- API RESEÑAS ---
+@app.route('/api/resenas', methods=['GET'])
+def api_listar_resenas():
+    """Listar todas las reseñas"""
+    resenas = Resena.query.order_by(Resena.fecha.desc()).all()
+    return jsonify([r.to_dict() for r in resenas]), 200
 
-@app.route('/api/solicitudes', methods=['POST'])
+@app.route('/api/resenas', methods=['POST'])
 @token_requerido
-def api_crear_solicitud(usuario_actual):
+def api_crear_resena(usuario_actual):
     """
-    Crear una nueva solicitud de servicio
+    Calificar y reseñar el trabajo de un colaborador
     ---
     tags:
-      - API Solicitudes
+      - API Reseñas
     security:
       - Bearer: []
     parameters:
@@ -844,161 +1081,47 @@ def api_crear_solicitud(usuario_actual):
         schema:
           type: object
           required:
-            - titulo
+            - solicitud_id
+            - colaborador_id
+            - calificacion
           properties:
-            titulo:
+            solicitud_id:
+              type: integer
+              example: 1
+            colaborador_id:
+              type: integer
+              example: 4
+            calificacion:
+              type: integer
+              example: 5
+            comentario:
               type: string
-              example: "Mantenimiento aire acondicionado"
-            descripcion:
-              type: string
-              example: "Revisión general y carga de gas"
-            direccion:
-              type: string
-              example: "Av. Costera Miguel Alemán #100"
-            fecha_servicio:
-              type: string
-              example: "2026-11-25"
-            hora_servicio:
-              type: string
-              example: "16:00:00"
+              example: "Excelente trabajo, puntual y profesional."
     responses:
       201:
-        description: Solicitud creada exitosamente
+        description: Reseña guardada
     """
     data = get_request_data()
-    titulo = (data.get('titulo') or '').strip()
-    if not titulo:
-        return jsonify({'error': 'El título es obligatorio'}), 400
-
-    item = Solicitud(
-        titulo=titulo,
-        descripcion=data.get('descripcion'),
-        direccion=data.get('direccion'),
-        fecha_servicio=parse_date(data.get('fecha_servicio')),
-        hora_servicio=parse_time(data.get('hora_servicio')),
-        estado='pendiente'
-    )
-    db.session.add(item)
-    db.session.commit()
-    return jsonify(item.to_dict()), 201
-
-@app.route('/api/solicitudes/<int:id>', methods=['GET'])
-def api_obtener_solicitud(id):
-    """
-    Obtener detalle de una solicitud
-    ---
-    tags:
-      - API Solicitudes
-    """
-    solicitud = Solicitud.query.get_or_404(id)
-    return jsonify(solicitud.to_dict()), 200
-
-@app.route('/api/solicitudes/<int:id>', methods=['PUT'])
-@token_requerido
-def api_actualizar_solicitud(usuario_actual, id):
-    """
-    Actualizar estado de una solicitud
-    ---
-    tags:
-      - API Solicitudes
-    security:
-      - Bearer: []
-    """
-    solicitud = Solicitud.query.get_or_404(id)
-    data = get_request_data()
-    if 'titulo' in data: solicitud.titulo = data['titulo']
-    if 'descripcion' in data: solicitud.descripcion = data['descripcion']
-    if 'direccion' in data: solicitud.direccion = data['direccion']
-    if 'fecha_servicio' in data: solicitud.fecha_servicio = parse_date(data['fecha_servicio'])
-    if 'hora_servicio' in data: solicitud.hora_servicio = parse_time(data['hora_servicio'])
-    if 'estado' in data: solicitud.estado = data['estado']
-    db.session.commit()
-    return jsonify(solicitud.to_dict()), 200
-
-@app.route('/api/solicitudes/<int:id>', methods=['DELETE'])
-@token_requerido
-@rol_requerido('admin')
-def api_eliminar_solicitud(usuario_actual, id):
-    """
-    Eliminar una solicitud (Solo Administrador)
-    ---
-    tags:
-      - API Solicitudes
-    security:
-      - Bearer: []
-    """
-    solicitud = Solicitud.query.get_or_404(id)
-    db.session.delete(solicitud)
-    db.session.commit()
-    return jsonify({'mensaje': f'Solicitud {id} eliminada'}), 200
-
-
-# --- API CATEGORÍAS (PÚBLICAS PARA CONSULTA) ---
-@app.route('/api/categorias', methods=['GET'])
-def api_listar_categorias():
-    """
-    Listar catálogo de categorías activas
-    ---
-    tags:
-      - API Categorías
-    """
-    items = Categoria.query.filter_by(activo=True).all()
-    return jsonify([c.to_dict() for c in items]), 200
-
-@app.route('/api/categorias', methods=['POST'])
-@token_requerido
-@rol_requerido('admin')
-def api_crear_categoria(usuario_actual):
-    """
-    Crear una nueva categoría (Solo Administrador)
-    ---
-    tags:
-      - API Categorías
-    security:
-      - Bearer: []
-    """
-    data = get_request_data()
-    if not data.get('nombre'):
-        return jsonify({'error': 'El nombre es obligatorio'}), 400
-    item = Categoria(
-        nombre=data.get('nombre'),
-        descripcion=data.get('descripcion'),
-        icono=data.get('icono'),
-        activo=bool(data.get('activo', True))
-    )
-    db.session.add(item)
-    db.session.commit()
-    return jsonify(item.to_dict()), 201
-
-
-# --- API RESEÑAS ---
-@app.route('/api/resenas', methods=['GET'])
-def api_listar_resenas():
-    """Listar calificaciones y reseñas públicas"""
-    resenas = Resena.query.all()
-    return jsonify([r.to_dict() for r in resenas]), 200
-
-@app.route('/api/resenas', methods=['POST'])
-@token_requerido
-def api_crear_resena(usuario_actual):
-    """
-    Crear una reseña y calificar a un colaborador
-    ---
-    tags:
-      - API Reseñas
-    security:
-      - Bearer: []
-    """
-    data = get_request_data()
+    solicitud_id = data.get('solicitud_id')
+    colaborador_id = data.get('colaborador_id')
     try:
         calif = int(data.get('calificacion', 5))
     except ValueError:
         return jsonify({'error': 'La calificación debe ser un entero entre 1 y 5'}), 400
 
+    if not solicitud_id or not colaborador_id:
+        return jsonify({'error': 'solicitud_id y colaborador_id son obligatorios'}), 400
+
+    if not Solicitud.query.get(solicitud_id):
+        return jsonify({'error': f'La solicitud {solicitud_id} no existe'}), 404
+
+    if not Usuario.query.get(colaborador_id):
+        return jsonify({'error': f'El colaborador {colaborador_id} no existe'}), 404
+
     item = Resena(
-        solicitud_id=data.get('solicitud_id'),
+        solicitud_id=solicitud_id,
         cliente_id=usuario_actual.usuario_id,
-        colaborador_id=data.get('colaborador_id'),
+        colaborador_id=colaborador_id,
         calificacion=calif,
         comentario=data.get('comentario')
     )
@@ -1007,24 +1130,67 @@ def api_crear_resena(usuario_actual):
     return jsonify(item.to_dict()), 201
 
 
-# --- API INCIDENCIAS ---
-@app.route('/api/incidencias', methods=['POST'])
+# --- API PERFILES COLABORADOR ---
+@app.route('/api/perfiles_colaborador', methods=['GET'])
+def api_listar_perfiles_colaborador():
+    """Listar perfiles de colaboradores"""
+    items = PerfilColaborador.query.all()
+    return jsonify([p.to_dict() for p in items]), 200
+
+@app.route('/api/perfiles_colaborador', methods=['POST'])
 @token_requerido
-def api_crear_incidencia(usuario_actual):
+def api_crear_perfil_colaborador(usuario_actual):
     """
-    Reportar una incidencia de servicio o soporte
+    Crear o actualizar perfil del colaborador
     ---
     tags:
-      - API Incidencias
+      - API Perfiles Colaborador
     security:
       - Bearer: []
     """
     data = get_request_data()
+    user_id = data.get('usuario_id') or usuario_actual.usuario_id
+
+    if not Usuario.query.get(user_id):
+        return jsonify({'error': f'El usuario con ID {user_id} no existe'}), 404
+
+    perfil = PerfilColaborador(
+        usuario_id=user_id,
+        descripcion=data.get('descripcion'),
+        experiencia_anios=int(data.get('experiencia_anios') or 0),
+        zona=data.get('zona'),
+        disponible=bool(data.get('disponible', True)),
+        identidad_verificada=bool(data.get('identidad_verificada', False)),
+        calificacion_promedio=float(data.get('calificacion_promedio') or 0.0),
+        trabajos_realizados=int(data.get('trabajos_realizados') or 0)
+    )
+    db.session.add(perfil)
+    db.session.commit()
+    return jsonify(perfil.to_dict()), 201
+
+
+# --- API INCIDENCIAS ---
+@app.route('/api/incidencias', methods=['POST'])
+@token_requerido
+def api_crear_incidencia(usuario_actual):
+    """Reportar una incidencia de servicio"""
+    data = get_request_data()
+    tipo = data.get('tipo') or 'retraso'
+    descripcion = (data.get('descripcion') or '').strip()
+
+    if not descripcion:
+        return jsonify({'error': 'La descripción de la incidencia es obligatoria'}), 400
+
+    solicitud_id = data.get('solicitud_id')
+    if solicitud_id and not Solicitud.query.get(solicitud_id):
+        return jsonify({'error': f'La solicitud {solicitud_id} no existe'}), 404
+
     item = Incidencia(
         usuario_id=usuario_actual.usuario_id,
-        solicitud_id=data.get('solicitud_id'),
-        tipo=data.get('tipo', 'retraso'),
-        descripcion=data.get('descripcion'),
+        solicitud_id=solicitud_id,
+        soporte_id=data.get('soporte_id'),
+        tipo=tipo,
+        descripcion=descripcion,
         estado='abierto'
     )
     db.session.add(item)
@@ -1039,14 +1205,12 @@ def api_mis_incidencias(usuario_actual):
     return jsonify([i.to_dict() for i in items]), 200
 
 
-# --- API USUARIOS (GESTIÓN ADMINISTRATIVA) ---
-@app.route('/api/usuarios', methods=['GET'])
-@token_requerido
-@rol_requerido('admin')
-def api_listar_usuarios(usuario_actual):
-    """Listar usuarios (Solo Administradores)"""
-    usuarios = Usuario.query.all()
-    return jsonify([u.to_dict() for u in usuarios]), 200
+# --- API REGISTROS ---
+@app.route('/api/registros', methods=['GET'])
+def api_listar_registros():
+    """Listar registros generales"""
+    items = Registro.query.all()
+    return jsonify([r.to_dict() for r in items]), 200
 
 
 # ==========================================
@@ -1065,13 +1229,16 @@ def listar_usuarios():
 @app.route('/usuarios/crear', methods=['POST'])
 def crear_usuario():
     pwd = request.form.get('password_hash') or '123456'
+    correo = request.form.get('correo') or f"user_{datetime.utcnow().timestamp()}@example.com"
+    nombre = request.form.get('nombre') or 'Usuario'
     item = Usuario(
-        nombre=request.form.get('nombre'),
+        nombre=nombre,
+        correo=correo,
         telefono=request.form.get('telefono'),
         password_hash=generate_password_hash(pwd, method='pbkdf2:sha256'),
-        rol=request.form.get('rol', 'cliente'),
+        rol=request.form.get('rol', 'CLIENTE'),
         foto_perfil=request.form.get('foto_perfil'),
-        estado_cuenta=request.form.get('estado_cuenta', 'activo')
+        estado_cuenta=request.form.get('estado_cuenta', 'ACTIVA')
     )
     db.session.add(item)
     db.session.commit()
@@ -1228,14 +1395,20 @@ def listar_movimientos():
 def crear_movimiento():
     monto = float(request.form.get('monto') or 0.0)
     comision = float(request.form.get('comision') or 0.0)
+    billetera_id = request.form.get('billetera_id')
+    if not billetera_id:
+        b = Billetera.query.filter_by(usuario_id=request.form.get('usuario_id')).first()
+        billetera_id = b.billetera_id if b else 1
+
     item = Movimiento(
+        billetera_id=billetera_id,
         usuario_id=request.form.get('usuario_id'),
         solicitud_id=request.form.get('solicitud_id'),
         tipo=request.form.get('tipo'),
         monto=monto,
         comision=comision,
         monto_neto=monto - comision,
-        estado=request.form.get('estado')
+        estado=request.form.get('estado', 'completado')
     )
     db.session.add(item)
     db.session.commit()
@@ -1258,13 +1431,14 @@ def listar_perfiles_colaborador():
 @app.route('/perfiles_colaborador/crear', methods=['POST'])
 def crear_perfil_colaborador():
     item = PerfilColaborador(
+        usuario_id=request.form.get('usuario_id'),
         descripcion=request.form.get('descripcion'),
-        experiencia_anios=request.form.get('experiencia_anios'),
+        experiencia_anios=int(request.form.get('experiencia_anios') or 0),
         zona=request.form.get('zona'),
         disponible=True if request.form.get('disponible') == 'on' else False,
         identidad_verificada=True if request.form.get('identidad_verificada') == 'on' else False,
         calificacion_promedio=request.form.get('calificacion_promedio') or 0.0,
-        trabajos_realizados=request.form.get('trabajos_realizados') or 0
+        trabajos_realizados=int(request.form.get('trabajos_realizados') or 0)
     )
     db.session.add(item)
     db.session.commit()
@@ -1314,7 +1488,7 @@ def crear_resena():
         solicitud_id=request.form.get('solicitud_id'),
         cliente_id=request.form.get('cliente_id'),
         colaborador_id=request.form.get('colaborador_id'),
-        calificacion=request.form.get('calificacion'),
+        calificacion=int(request.form.get('calificacion') or 5),
         comentario=request.form.get('comentario')
     )
     db.session.add(item)
@@ -1341,12 +1515,15 @@ def crear_solicitud():
     h_serv = request.form.get('hora_servicio')
     
     item = Solicitud(
+        cliente_id=request.form.get('cliente_id'),
+        colaborador_id=request.form.get('colaborador_id'),
+        categoria_id=request.form.get('categoria_id'),
         titulo=request.form.get('titulo'),
         descripcion=request.form.get('descripcion'),
         direccion=request.form.get('direccion'),
         fecha_servicio=parse_date(f_serv),
         hora_servicio=parse_time(h_serv),
-        estado=request.form.get('estado', 'pendiente')
+        estado=request.form.get('estado', 'PENDIENTE')
     )
     db.session.add(item)
     db.session.commit()
@@ -1365,5 +1542,4 @@ def eliminar_solicitud(id):
 if __name__ == '__main__':
     port = int(os.getenv('PORT', 5000))
     debug = os.getenv('FLASK_DEBUG', 'False').lower() in ('true', '1', 't')
-    # host='0.0.0.0' permite que el emulador Android o tu nube escuchen tráfico entrante
     app.run(debug=debug, host='0.0.0.0', port=port)
